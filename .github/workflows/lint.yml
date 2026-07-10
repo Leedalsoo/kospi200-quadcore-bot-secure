@@ -1,1 +1,16 @@
+name: Python Lint Check
+on: [push]
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with: {python-version: '3.9'}
+      - name: Check syntax
+        run: |
+          pip install flake8
+          # 문법 오류와 참조 오류를 검사합니다.
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
 
