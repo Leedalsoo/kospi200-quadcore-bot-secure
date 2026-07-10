@@ -1,1 +1,17 @@
+```text
+# Sensitive Data
+.env
+*.key
+*.pem
 
+# Local Environment
+venv/
+__pycache__/
+.pytest_cache/
+
+# Runtime Data
+logs/*.jsonl
+*.db
+!logs/.keep
+
+```
