@@ -1,1 +1,15 @@
+# 비동기 파일 입출력 (EventStore용)
+aiofiles==24.1.0
+
+# 시스템 리소스 및 성능 모니터링 (ObservabilityAgent용)
+psutil==6.0.0
+
+# 시간대 표준화 (TimeAgent용)
+pytz==2024.1
+
+# 비동기 네트워크 통신 보조
+asyncio==3.4.3
+
+# 시스템 로그 및 설정 관리를 위한 기본 유틸리티
+typing-extensions==4.12.0
 
