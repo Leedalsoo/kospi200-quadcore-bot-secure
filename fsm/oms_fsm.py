@@ -8,32 +8,33 @@ from enum import Enum, auto
 import logging
 
 class OrderStatus(Enum):
+    # 명세서 14단계 상태 전이 규격 반영
     CREATED = auto(); PENDING = auto(); SENT = auto(); PARTIAL = auto()
     FILLED = auto(); CANCELLED = auto(); REJECTED = auto()
+    ACCEPTED = auto(); PENDING_CANCEL = auto(); PENDING_REPLACE = auto()
+    EXPIRED = auto(); SUSPENDED = auto(); CALCULATED = auto()
 
 class OMS_FSM:
-    """
-    [①사유]: 주문 상태 전이의 강제성 및 정합성 검증 엔진.
-    [방어 기제 #56, #142] 예외적인 상태 전이 시 경보(Alert) 발행.
-    """
     def __init__(self, event_bus):
         self.event_bus = event_bus
         self.logger = logging.getLogger("OMS_FSM")
+        # 14단계 상태 전이 매트릭스 확장
         self._transitions = {
             OrderStatus.CREATED: {OrderStatus.PENDING, OrderStatus.REJECTED},
-            OrderStatus.PENDING: {OrderStatus.SENT, OrderStatus.REJECTED},
-            OrderStatus.SENT: {OrderStatus.PARTIAL, OrderStatus.FILLED, OrderStatus.CANCELLED},
+            OrderStatus.PENDING: {OrderStatus.SENT, OrderStatus.REJECTED, OrderStatus.ACCEPTED},
+            OrderStatus.SENT: {OrderStatus.PARTIAL, OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.PENDING_CANCEL},
             OrderStatus.PARTIAL: {OrderStatus.PARTIAL, OrderStatus.FILLED, OrderStatus.CANCELLED},
+            OrderStatus.PENDING_CANCEL: {OrderStatus.CANCELLED, OrderStatus.REJECTED},
         }
 
     async def transition(self, current: OrderStatus, next_status: OrderStatus, order_id: str) -> bool:
-        """
-        [①사유]: 상태 전이 수행 및 검증.
-        [②위험성]: 규칙 위반 상태 전이 시 즉시 시스템 셧다운 경보 발행.
-        """
         if next_status in self._transitions.get(current, set()):
             self.logger.info(f"Order {order_id}: {current.name} -> {next_status.name}")
             return True
+        else:
+            self.logger.error(f"CRITICAL: Invalid State Transition for {order_id}: {current.name} -> {next_status.name}")
+            await self.event_bus.publish(priority=0, event_type="CRITICAL_ALERT", data={"msg": "Invalid Transition", "order_id": order_id})
+            return False
         else:
             self.logger.error(f"CRITICAL: Invalid State Transition for {order_id}: {current.name} -> {next_status.name}")
             # [방어 기제 #189] 비정상 전이 발견 시 즉시 시스템 경보 발행
