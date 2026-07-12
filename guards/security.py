@@ -1,33 +1,24 @@
 """
-이 코드는 명세서 제13장 보안 요구사항을 반영하여 작성되었음.
-[①사유]: 민감한 개인정보/금융 데이터의 로그 유출 방지 및 메모리 잔류 데이터 초기화.
-[②위험성]: 로그 파일 분석 시 계좌 번호 등 민감 정보 노출 및 메모리 덤프 공격.
-[③커스텀 범위]: 로그 마스킹 엔진 및 민감 데이터 제로화 루틴.
+[①사유]: 시스템 보안 및 민감 데이터 유출 방지.
+[②방어 기제 #73, #121, #173]: 로그 마스킹 및 메모리 안전성 관리.
 """
 
+import logging
 import re
 
 class SecurityGuard:
-    """
-    [①사유]: 시스템 로그 마스킹 및 메모리 데이터 제로화.
-    [방어 기제 #73, #121, #173] 데이터 유출 및 잔류 방지.
-    """
-    
-    @staticmethod
-    def mask_sensitive_data(text: str) -> str:
-        """
-        [①사유]: 로그 내 계좌 번호 등 민감 정보 마스킹.
-        [②위험성]: 로그 분석 도구/외부 저장소로 민감 정보 전달.
-        """
-        # 예: 10자리 계좌 번호 패턴 발견 시 뒤 4자리 마스킹
-        return re.sub(r'\d{6}(\d{4})', r'******\1', text)
+    def __init__(self):
+        self.logger = logging.getLogger("SecurityGuard")
+        # 민감 정보 패턴 (예: 계좌번호, API 키 패턴)
+        self.sensitive_pattern = re.compile(r"(account_number|api_key|secret)[:\s]+[^\s,]+", re.IGNORECASE)
 
-    @staticmethod
-    def secure_wipe(data: bytearray):
-        """
-        [①사유]: 메모리 내 민감 정보 잔류 방지(Zeroing).
-        [②위험성]: 시스템 종료 후 메모리 덤프 시 데이터 탈취.
-        """
-        for i in range(len(data)):
-            data[i] = 0
+    def mask_sensitive_data(self, data: str) -> str:
+        """[①사유]: 로그 내 민감 정보 마스킹."""
+        return self.sensitive_pattern.sub(r"\1: *****", data)
 
+    def secure_memory_wipe(self, sensitive_data: bytearray):
+        """[①사유]: 메모리 내 민감 정보 제로화 (Zeroing)."""
+        # [방어 기제 #173]: 메모리 데이터 파괴
+        for i in range(len(sensitive_data)):
+            sensitive_data[i] = 0
+        self.logger.info("Sensitive memory buffer wiped successfully.")
