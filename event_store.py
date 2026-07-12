@@ -6,6 +6,7 @@
 import json
 import os
 import hashlib
+import logging  # 에러 해결을 위해 추가
 from datetime import datetime
 from typing import Any, List
 
@@ -17,12 +18,13 @@ class EventStore:
         # [세부 운영 수치]
         self.params = {
             "max_file_size": 100 * 1024 * 1024,  # 100MB 도달 시 로그 회전
-            "buffer_threshold": 10              # 10개 이벤트마다 강제 동기화(fsync)
+            "buffer_threshold": 10              # 10개 이벤트마다 강제 동기화
         }
         self.event_count = 0
+        self.logger = logging.getLogger("EventStore")
 
     def _generate_checksum(self, data: str) -> str:
-        """[방어 기제 #120]: 데이터 변조 탐지를 위한 체크섬 생성."""
+        """[방어 기제 #120]: 데이터 변조 탐지 체크섬."""
         return hashlib.sha256(data.encode('utf-8')).hexdigest()
 
     async def save_event(self, event_type: str, data: Any):
@@ -33,11 +35,9 @@ class EventStore:
             "data": data
         }
         
-        # 체크섬 추가
         json_data = json.dumps(event_entry)
         entry_with_checksum = f"{json_data}|{self._generate_checksum(json_data)}\n"
 
-        # [방어 기제 #75]: 파일 크기 확인 후 로테이션 (간략화)
         if os.path.exists(self.log_path) and os.path.getsize(self.log_path) > self.params["max_file_size"]:
             os.rename(self.log_path, f"{self.log_path}.{datetime.now().strftime('%Y%m%d%H%M%S')}")
 
@@ -45,7 +45,6 @@ class EventStore:
             f.write(entry_with_checksum)
             self.event_count += 1
             
-            # [방어 기제 #90]: 배치 단위 동기화 (성능과 안전의 균형)
             if self.event_count >= self.params["buffer_threshold"]:
                 f.flush()
                 os.fsync(f.fileno())
@@ -60,11 +59,14 @@ class EventStore:
         with open(self.log_path, "r", encoding="utf-8") as f:
             for line in f:
                 try:
-                    data, checksum = line.strip().split('|')
+                    parts = line.strip().split('|')
+                    if len(parts) != 2:
+                        continue
+                    data, checksum = parts
                     if self._generate_checksum(data) == checksum:
                         history.append(json.loads(data))
                     else:
-                        logging.error("Corrupted event log detected!")
+                        self.logger.error("Corrupted event log detected!")
                 except Exception as e:
-                    logging.error(f"Failed to load event: {e}")
+                    self.logger.error(f"Failed to load event: {e}")
         return history
