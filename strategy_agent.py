@@ -1,43 +1,24 @@
 """
-[①사유]: KOSPI200 옵션 다중 경계 전략의 세부 파라미터화.
-[②방어 기제 #46, #69, #102]: 스프레드 및 급변동성 필터 적용.
+[①사유]: 전략 실행 엔진의 샌드박스화 및 데이터 라우팅.
+[②방어 기제 #109]: 전략별 독립된 실행 공간 보장.
 """
-
 import logging
-from data_contract import MarketTick, OrderRequest
+from plugins.plugin_loader import PluginLoader
 
 class StrategyAgent:
-    def __init__(self, event_bus, risk_agent):
-        self.event_bus = event_bus
-        self.risk_agent = risk_agent
+    def __init__(self, event_bus, shared_context):
+        self.bus = event_bus
         self.logger = logging.getLogger("StrategyAgent")
-        
-        # [정교화된 전략 수치]
-        self.params = {
-            "max_spread": 0.05,        # 0.05pt 이하 스프레드에서만 진입
-            "max_volatility": 0.01,    # 1.0% 이상의 급변동 시 관망
-            "base_quantity": 1         # 1계약 단위
-        }
+        # [자동 탐색] 플러그인 로더를 통해 등록된 모든 전략을 관리
+        self.loader = PluginLoader(self.bus, shared_context)
+        self.strategies = self.loader.discover_and_load()
+        self.logger.info(f"StrategyAgent initialized with {len(self.strategies)} strategies.")
 
-    def _is_entry_signal(self, tick: MarketTick) -> bool:
-        """
-        [전략 로직]: 비용 효율성 및 시장 안정성 검증.
-        """
-        # 1. 호가 스프레드 필터
-        spread = tick.ask_price - tick.bid_price
-        if spread > self.params["max_spread"]:
-            return False
-            
-        # 2. 시장 급변동성 필터
-        if tick.volatility > self.params["max_volatility"]:
-            return False
-            
-        return True
-
-    def _generate_order(self, tick: MarketTick) -> OrderRequest:
-        """[전략 로직]: 주문 최적화."""
-        return OrderRequest(
-            order_id=f"ORD_{tick.timestamp}",
-            quantity=self.params["base_quantity"],
-            price=tick.last_price
-        )
+    async def on_market_tick(self, tick):
+        """[①사유]: 시장 데이터를 등록된 모든 전략 플러그인에 전파."""
+        for name, strategy in self.strategies.items():
+            try:
+                # 전략별 고유 로직 호출
+                await strategy.on_market_tick(tick)
+            except Exception as e:
+                self.logger.error(f"Strategy {name} runtime error: {e}")
