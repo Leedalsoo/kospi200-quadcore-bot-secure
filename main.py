@@ -1,7 +1,6 @@
 """
-[①사유]: 전체 시스템 통합 및 라이프사이클 관리.
-[②방어 기제 #16, #20]: 상태 복구 기반 재기동 및 우아한 종료(Graceful Shutdown).
-[③추가 사항]: 전략 동적 로딩 및 오케스트레이션 엔진 통합.
+[①사유]: 전체 시스템 통합 부팅 및 설정(Config) 주입.
+[②방어 기제 #16, #20]: ConfigAgent 주입을 통한 런타임 제어권 확보 및 우아한 종료.
 """
 
 import asyncio
@@ -15,7 +14,8 @@ from risk_agent import RiskAgent
 from execution_agent import ExecutionAgent
 from data_contract import HardLimitsConfig
 
-# [추가] 오케스트레이션 및 플러그인 로더 import
+# [신규] 설정 및 오케스트레이션/로딩 통합
+from config.config_agent import ConfigAgent
 from plugins.plugin_loader import PluginLoader
 from orchestration.strategy_orchestrator import StrategyOrchestrator
 
@@ -25,31 +25,41 @@ logger = logging.getLogger("Main")
 
 class TradingSystem:
     def __init__(self):
-        # [기존 인프라 계층]
-        self.bus = EventBus(max_size=20000)
+        # 1. [데이터 계층] 설정 로드 (무결성 검증 포함)
+        self.config = ConfigAgent() 
+        
+        # 2. [인프라 계층] 이벤트 버스 및 저장소
+        self.bus = EventBus(max_size=self.config.get("queue_size", 20000))
         self.store = EventStore(log_path="logs/system_state.jsonl")
+        
+        # 3. [운용 계층] 전략 지휘부 및 플러그인 로더
+        # Config에서 전략별 초기 가중치를 주입받음
+        self.shared_context = {
+            "active_weights": self.config.get("active_weights"), 
+            "global_delta": 0.0,
+            "config": self.config # 모든 에이전트가 설정에 접근 가능하도록 주입
+        }
+        self.loader = PluginLoader(self.bus, self.shared_context)
+        self.orchestrator = StrategyOrchestrator(self.shared_context)
+        
+        # 4. [기존 인프라] OMS 및 실행 엔진
         self.fsm = OMS_FSM(self.bus)
         self.risk = RiskAgent(HardLimitsConfig(max_margin_usage=1000000))
         self.market = MarketDataAgent(self.bus)
         self.execution = ExecutionAgent(self.bus, self.fsm)
         
-        # [신규 통합 계층] 공유 컨텍스트 및 지휘부 초기화
-        self.shared_context = {"active_weights": {}, "global_delta": 0.0}
-        self.loader = PluginLoader(self.bus, self.shared_context)
-        self.orchestrator = StrategyOrchestrator(self.shared_context)
-        
         self.is_running = True
 
     async def initialize(self):
         """[①사유]: 시스템 부팅 및 전략 자동 로드 통합."""
-        logger.info("System Initializing: Loading historical state and plugins...")
+        logger.info("System Initializing: Loading config, state, and plugins...")
         
-        # [기존] 상태 복구 로직
+        # 설정 검증 및 상태 복구
         history = await self.store.load_history()
         for event in history:
-            logger.info(f"Replaying Event: {event['event_type']}")
+            logger.debug(f"Replaying Event: {event['event_type']}")
             
-        # [신규] 전략 로딩 및 오케스트레이션 등록
+        # 전략 로딩 및 오케스트레이션 등록
         discovered_plugins = self.loader.discover_and_load()
         self.orchestrator.register_strategies(discovered_plugins)
         logger.info(f"System Ready. Strategies Loaded: {list(discovered_plugins.keys())}")
@@ -58,21 +68,20 @@ class TradingSystem:
         """[①사유]: 시스템 이벤트 루프 실행."""
         await self.initialize()
         
-        logger.info("System Ready. Entering Event Loop.")
+        logger.info("Entering Event Loop. System Fully Armed.")
         while self.is_running:
             try:
                 # 이벤트 버스에서 작업 소비
                 event = await self.bus.consume()
                 if event:
-                    # [고도화] 시장 상황(Market Regime)에 따른 오케스트레이션 실행 로직
-                    # 예: 특정 조건에서 orchestrator.run_orchestration("VOLATILE") 호출
-                    logger.debug(f"Processing: {event}")
+                    # 오케스트레이터가 실시간으로 시장 국면 판별 후 전략 조정
+                    await self.orchestrator.monitor_regime(event)
             except Exception as e:
                 logger.critical(f"System Loop Failure: {e}")
 
     def shutdown(self):
-        self.is_running = False
         logger.info("System Shutting Down gracefully.")
+        self.is_running = False
 
 if __name__ == "__main__":
     system = TradingSystem()
