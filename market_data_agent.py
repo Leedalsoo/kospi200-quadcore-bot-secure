@@ -1,39 +1,49 @@
 """
-이 코드는 마스터 SDD 3.0의 [제 7장: 시장 데이터 처리 에이전트] 요구사항을 반영함.
-[방어 기제 #46] 비정상 시장가 필터링 및 [방어 기제 #69] LOB 정규화 로직 포함.
+[①사유]: 거래소 틱 데이터 정규화 및 LOB 미시구조 분석.
+[방어 기제 #46, #69]: 호가 불균형 및 가격 이상치 실시간 필터링.
 """
 
 import logging
 from typing import Dict
-# data_contract 모듈에서 MarketTick을 불러와야 에러가 해결됩니다.
 from data_contract import MarketTick
 
 class MarketDataAgent:
     def __init__(self, event_bus):
         self.event_bus = event_bus
         self.logger = logging.getLogger("MarketDataAgent")
+        
+        # [세부 운영 수치]
+        self.params = {
+            "price_volatility_limit": 0.05,  # 5% 이상 급변동 시 이상치 간주
+            "min_liquidity_qty": 10,         # 호가 잔량 부족 경고 기준
+            "spread_anomaly_limit": 0.2      # 0.2pt 이상 스프레드 시 비정상 징후
+        }
         self.last_price: float = 0.0
 
     async def on_tick(self, tick: MarketTick):
         """
-        [①사유]: 거래소 데이터 수신 및 유효성 검증.
-        [방어 기제 #46] 극단적인 가격 변동(Outlier) 차단.
+        [①사유]: 틱 수신 시 LOB 정규화 및 리스크 필터링.
         """
-        price = tick.last_price
-        
-        # 변동성 체크
-        if self.last_price != 0 and abs(price - self.last_price) / self.last_price > 0.1:
-            self.logger.warning(f"Abnormal Price Detected: {price}. Filtered.")
-            await self.event_bus.publish(priority=0, event_type="CRITICAL_ALERT", data={"msg": "Outlier Price"})
+        # 1. 가격 이상치(Outlier) 체크
+        if self.last_price != 0 and abs(tick.last_price - self.last_price) / self.last_price > self.params["price_volatility_limit"]:
+            self.logger.error(f"Critical Outlier: {tick.last_price}")
+            await self.event_bus.publish(priority=0, event_type="CRITICAL_ALERT", data={"msg": "Price Outlier"})
             return
 
-        self.last_price = price
-        
-        # 정규화된 틱 데이터 전송
-        await self.event_bus.publish(priority=3, event_type="NORMALIZED_TICK", data=tick)
-        self.logger.info(f"Tick Processed: {price}")
-        self.order_book = {
-            "bids": list(zip(tick.bid_prices, tick.bid_qtys)),
-            "asks": list(zip(tick.ask_prices, tick.ask_qtys))
-        }
+        # 2. 호가 스프레드 이상 징후 탐지
+        spread = tick.ask_price - tick.bid_price
+        if spread > self.params["spread_anomaly_limit"]:
+            self.logger.warning(f"Abnormal Spread: {spread}")
 
+        # 3. LOB 정규화 (데이터 계약 규격화)
+        self.order_book = {
+            "bids": sorted(zip(tick.bid_prices, tick.bid_qtys), key=lambda x: x[0], reverse=True),
+            "asks": sorted(zip(tick.ask_prices, tick.ask_qtys), key=lambda x: x[0]),
+            "timestamp": tick.timestamp
+        }
+        
+        self.last_price = tick.last_price
+        
+        # 4. 정규화된 데이터 및 LOB 상태 전송
+        await self.event_bus.publish(priority=3, event_type="NORMALIZED_TICK", data={"tick": tick, "lob": self.order_book})
+        self.logger.info(f"Market Data Processed: Price {self.last_price}")
