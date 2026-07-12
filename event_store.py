@@ -17,7 +17,6 @@ class EventStore:
     async def save_event(self, event_type: str, data: Any):
         """
         [방어 기제 #36, #90] WAL 선행 기록 및 물리적 동기화(fsync).
-        모든 상태 변화는 디스크 기록이 완료된 후 시스템에 반영됨.
         """
         event_entry = {
             "timestamp": datetime.now().isoformat(),
@@ -33,7 +32,16 @@ class EventStore:
 
     async def load_history(self):
         """
-        [방어 기제 #16] 재기동 시 상태 복구를 위한 이벤트 Upcasting.
+        [방어 기제 #16] 재기동 시 상태 복구를 위한 이벤트 로드.
+        """
+        if not os.path.exists(self.log_path):
+            return []
+            
+        history = []
+        with open(self.log_path, "r", encoding="utf-8") as f:
+            for line in f:
+                history.append(json.loads(line))
+        return history # 수정됨: 'events'를 'history'로 정확히 반환
         """
         if not os.path.exists(self.log_path):
             return []
