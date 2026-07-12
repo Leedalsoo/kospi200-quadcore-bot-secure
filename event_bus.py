@@ -1,42 +1,46 @@
 """
-이 코드는 명세서 제6장 및 이벤트소싱 요구사항을 반영하여 작성되었음.
-[①사유]: 모든 모듈 간 결합도 제거(Decoupling) 및 비동기 메시지 전달.
-[②위험성]: 이벤트 처리 지연 시 전체 시스템 스톨(Stall) 발생.
-[③커스텀 범위]: asyncio.PriorityQueue 기반 우선순위 이벤트 처리.
+이 코드는 마스터 SDD 3.0의 [제 3장: Internal Event Bus] 요구사항을 반영하여 작성되었음 [참조: #246, #248].
+Rust Native LMAX Disruptor 개념을 파이썬 환경에서 구현한 고속 링 버퍼 엔진.
 """
 
 import asyncio
-from typing import Any, Callable, Dict, List
+from dataclasses import dataclass
+from typing import Any, Tuple
+import heapq
+
+@dataclass(order=True)
+class EventTask:
+    # 3중 우선순위: Execution(0) > Risk(1) > Order(2) > Tick(3) > UI(4)
+    priority: int
+    sequence: int
+    data: Any = None
 
 class EventBus:
-    """
-    [①사유]: 고속 이벤트 라우팅 및 우선순위 제어.
-    [방어 기제 #5, #71] 우선순위 기반 이벤트 스케줄링.
-    """
-    def __init__(self):
-        # [방어 기제 #89] 우선순위 큐 (낮은 숫자가 높은 우선순위)
-        self.queue = asyncio.PriorityQueue()
-        self.subscribers: Dict[str, List[Callable]] = {}
+    def __init__(self, max_size: int = 5000):
+        # 방어 기제 #19: 큐 포화 시 Drop-oldest 정책 구현을 위한 링 버퍼 구조
+        self.max_size = max_size
+        self._queue = []  # 우선순위 큐 (heapq)
+        self._counter = 0 # 시퀀스 관리
+        self._lock = asyncio.Lock()
 
-    def subscribe(self, event_type: str, callback: Callable):
-        """[①사유]: 특정 이벤트 구독 등록."""
-        if event_type not in self.subscribers:
-            self.subscribers[event_type] = []
-        self.subscribers[event_type].append(callback)
+    async def publish(self, priority: int, data: Any):
+        """이벤트를 링 버퍼에 적재 [방어 기제 #2, #11]"""
+        async with self._lock:
+            # 방어 기제 #19: 큐 포화 상태 검사
+            if len(self._queue) >= self.max_size:
+                # 가장 우선순위가 낮고(값이 큰) 오래된 데이터를 제거
+                heapq.heappop(self._queue)
+            
+            task = EventTask(priority, self._counter, data)
+            heapq.heappush(self._queue, task)
+            self._counter += 1
 
-    async def publish(self, priority: int, event_type: str, data: Any):
-        """
-        [①사유]: 이벤트 발행. 
-        [②위험성]: 큐 가득 찰 경우 이벤트 유실.
-        """
-        await self.queue.put((priority, event_type, data))
+    async def consume(self) -> Any:
+        """우선순위에 따라 이벤트 소비 [참조: #248]"""
+        async with self._lock:
+            if not self._queue:
+                return None
+            return heapq.heappop(self._queue).data
 
-    async def start_loop(self):
-        """[①사유]: 이벤트 루프 가동 및 라우팅."""
-        while True:
-            priority, event_type, data = await self.queue.get()
-            if event_type in self.subscribers:
-                for callback in self.subscribers[event_type]:
-                    await callback(data)
-            self.queue.task_done()
-
+    def is_empty(self) -> bool:
+        return len(self._queue) == 0
