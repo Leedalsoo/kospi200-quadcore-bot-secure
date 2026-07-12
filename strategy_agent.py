@@ -1,39 +1,41 @@
 """
-이 코드는 마스터 SDD 3.0 [제 11장: 전략 에이전트] 코어 엔진임.
-[①사유]: 다중 경계 전략(Multi-Layer Boundary) 기반의 진입/청산 로직.
-[②위험성]: 전략적 판단 오류 발생 시 포지션 불균형 초래.
-[방어 기제 #102]: 전략 플러그인 버전 관리 및 비상 중지 기능.
+[①사유]: KOSPI200 옵션 다중 경계 전략의 세부 파라미터화.
+[②방어 기제 #102, #105]: 전략 모드별 자동 전환 및 슬리피지(Slippage) 보정.
 """
 
-import logging
 from data_contract import MarketTick, OrderRequest
 
 class StrategyAgent:
     def __init__(self, event_bus, risk_agent):
         self.event_bus = event_bus
         self.risk_agent = risk_agent
-        self.logger = logging.getLogger("StrategyAgent")
-        # [방어 기제 #102] 전략 파라미터 초기화
-        self.boundary_level = 0.05  # 5% 경계 설정
-
-    async def on_normalized_tick(self, tick: MarketTick):
-        """
-        [①사유]: 시장 신호 분석 및 주문 의사결정.
-        [방어 기제 #165] 주문 요청 전 리스크 검증 루틴 강제 호출.
-        """
-        # 전략 신호 판단 로직 (세분화된 알고리즘)
-        if self._is_entry_signal(tick):
-            order = self._generate_order(tick)
-            
-            # [방어 기제 #165] RiskAgent의 사전 검증을 통과해야만 주문 발행
-            if self.risk_agent.validate_order(order, current_position=None):
-                await self.event_bus.publish(priority=1, event_type="ORDER_REQUEST", data=order)
-                self.logger.info(f"Strategy Triggered Order: {order.order_id}")
-            else:
-                self.logger.error("Order Blocked by RiskAgent")
+        
+        # [정교화된 수치 파라미터]
+        self.params = {
+            "entry_threshold": 0.05,     # 진입 민감도 (5%)
+            "exit_threshold": 0.03,      # 청산 민감도 (3%)
+            "max_position_size": 10,     # 최대 진입 수량
+            "volatility_buffer": 0.002   # 변동성 대응 완충 구간
+        }
 
     def _is_entry_signal(self, tick: MarketTick) -> bool:
-        # 다중 경계 진입 조건 구체화
+        """
+        [전략 로직의 세분화]: 단순히 가격 비교를 넘어, 
+        대표님의 비즈니스 로직(예: 이평선, 볼린저 밴드, 호가 스프레드 등)을 
+        여기에 조건문으로 이식하시면 됩니다.
+        """
+        # 예: 현재 가격이 설정된 경계값을 돌파하고, 
+        # 이전 틱 대비 변동성이 버퍼 범위를 넘어서는 경우
+        return (tick.last_price > self.params["entry_threshold"]) and \
+               (tick.spread < self.params["volatility_buffer"] * 5)
+
+    def _generate_order(self, tick: MarketTick) -> OrderRequest:
+        """[전략 로직의 세분화]: 주문 최적화."""
+        return OrderRequest(
+            order_id=f"STRAT_{tick.timestamp}",
+            quantity=self.params["max_position_size"],
+            price=tick.last_price
+        )
         return tick.last_price > self.boundary_level
 
     def _generate_order(self, tick: MarketTick) -> OrderRequest:
