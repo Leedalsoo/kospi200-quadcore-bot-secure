@@ -1,24 +1,49 @@
 """
-[①사유]: 볼륨 폭발 및 비대칭 추세 포착을 위한 기습 진입.
-[②방어 기제 #155, #222]: 4중 필터(OBI, Basis, Skew, POC) 교차 검증 적용.
+이 코드는 명세서 제9장 및 기억 속의 '선물 헤징 결합' 요구사항을 반영하여 작성되었음.
+[①사유]: 함정 전략(Trap) 진입 시 발생하는 델타 노출도를 선물로 즉시 중립화.
+[②위험성]: 기습 진입 직후의 변동성 휩쏘로 인한 함정 비용(프리미엄) 전액 손실 방지.
+[③커스텀 범위]: 선물 헤지 비율 동기화, 휩쏘 필터 결합, 15분 쿨다운 강제.
+[방어 기제 매핑]: #9-3, #155, #222
 """
+
 from .base_plugin import BaseStrategyPlugin
+import time
 
 class Track2Trap(BaseStrategyPlugin):
-    async def on_market_tick(self, data: dict):
-        # 4중 휩쏘 필터링 로직 (명세서 9-2)
-        # 1. OBI(호가 잔량 불균형), 2. 베이시스 검증, 3. 스큐(Skew) 일치, 4. POC(매물대) 관통
-        filters = [
-            data.get('obi', 0) > 0.5,
-            data.get('basis_valid', False),
-            data.get('skew_match', False),
-            data.get('poc_break', False)
-        ]
-        
-        if all(filters):
-            # 자본의 10% 할당 제약 내에서 가중치 반영
-            weight = self.context['active_weights'].get(self.name, 0.1)
-            # 기습 진입 (지정가 펀칭)
-            await self.execute_order(data['last_price'], int(10 * weight), "BUY")
-            self.logger.info(f"Trap Strategy Triggered: {data['last_price']}")
+    def __init__(self, name: str, event_bus, shared_context):
+        super().__init__(name, event_bus, shared_context)
+        self.last_trade_time = 0
+        self.COOLDOWN_SECONDS = 900 # 15분 하드웨어 쿨다운 (명세서 9-5)
 
+    async def on_market_tick(self, data: dict):
+        """
+        [①사유]: 4중 필터 통과 후 옵션 기습 진입 및 즉각적 선물 헤지(Delta-Neutral).
+        [②방어 기제]: 함정 비용(프리미엄) 보호를 위한 즉시 델타 중립화.
+        """
+        # 1. 쿨다운 검증
+        if time.monotonic() - self.last_trade_time < self.COOLDOWN_SECONDS:
+            return
+
+        # 2. 4중 휩쏘 필터 (OBI, Basis, Skew, POC)
+        if all([data.get('obi', 0) > 0.5, data.get('basis_valid'), 
+                data.get('skew_match'), data.get('poc_break')]):
+            
+            weight = self.context['active_weights'].get(self.name, 0.1)
+            target_qty = int(10 * weight)
+            
+            # 3. [핵심] 옵션 기습 진입 (함정 설치)
+            await self.execute_order(data['last_price'], target_qty, "BUY")
+            
+            # 4. [핵심] 선물 헤지 (함정 비용 보호)
+            # 옵션 진입으로 인해 발생한 델타를 선물로 즉시 상쇄
+            # 옵션 델타 1.0당 선물 1계약 매도 (매수 진입 시)
+            option_delta = data.get("option_delta_exposure", 0.0)
+            hedge_qty = -round(option_delta) 
+            
+            if abs(hedge_qty) > 0:
+                side = "SELL" if hedge_qty < 0 else "BUY"
+                await self.execute_order(data['last_price'], abs(hedge_qty), side)
+                self.logger.info(f"Trap Secured: Option Buy & Futures Hedge {side} {abs(hedge_qty)}")
+
+            self.last_trade_time = time.monotonic()
+            self.logger.info(f"Trap Strategy Triggered: {target_qty} units with Futures Hedge active.")
