@@ -5,6 +5,8 @@
 
 import logging
 from typing import Dict
+# data_contract 모듈에서 MarketTick을 불러와야 에러가 해결됩니다.
+from data_contract import MarketTick
 
 class MarketDataAgent:
     def __init__(self, event_bus):
@@ -12,28 +14,24 @@ class MarketDataAgent:
         self.logger = logging.getLogger("MarketDataAgent")
         self.last_price: float = 0.0
 
-    async def on_tick(self, tick_data: Dict):
+    async def on_tick(self, tick: MarketTick):
         """
         [①사유]: 거래소 데이터 수신 및 유효성 검증.
         [방어 기제 #46] 극단적인 가격 변동(Outlier) 차단.
         """
-        price = tick_data.get("price")
+        price = tick.last_price
         
-        # 단순 변동성 체크 (예시: 이전 가격 대비 10% 이상 변동 시 비정상 간주)
+        # 변동성 체크
         if self.last_price != 0 and abs(price - self.last_price) / self.last_price > 0.1:
             self.logger.warning(f"Abnormal Price Detected: {price}. Filtered.")
-            # [방어 기제 #189] 비정상 데이터 경보
             await self.event_bus.publish(priority=0, event_type="CRITICAL_ALERT", data={"msg": "Outlier Price"})
             return
 
         self.last_price = price
         
         # 정규화된 틱 데이터 전송
-        await self.event_bus.publish(priority=3, event_type="NORMALIZED_TICK", data=tick_data)
+        await self.event_bus.publish(priority=3, event_type="NORMALIZED_TICK", data=tick)
         self.logger.info(f"Tick Processed: {price}")
-    async def rebuild_orderbook(self, tick: MarketTick):
-        """[①사유]: 1~10호가 뎁스 재구축. [②위험성]: 부분 호가 반영 시 왜곡."""
-        # 방어 기제 #46: 이상 가격 발생 시 통계적 필터링 적용
         self.order_book = {
             "bids": list(zip(tick.bid_prices, tick.bid_qtys)),
             "asks": list(zip(tick.ask_prices, tick.ask_qtys))
