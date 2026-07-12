@@ -1,39 +1,34 @@
 """
-이 코드는 명세서 제5장 전략 플러그인 로더 요구사항을 반영하여 작성되었음.
-[①사유]: 런타임 중 전략 동적 교체 및 전략 버전 관리.
-[②위험성]: 검증되지 않은 외부 코드 실행 시 시스템 오염 및 정보 유출.
-[③커스텀 범위]: 해시 기반 무결성 검증 및 동적 모듈 로딩.
+[①사유]: 전략 플러그인 동적 로드 및 Base 규격 준수 검증.
+[②방어 기제 #10]: 표준 규격(BaseStrategyPlugin)을 준수하지 않는 전략 실행 차단.
 """
 
-import importlib.util
-import hashlib
 import os
+import importlib
+import inspect
+import logging
+from .base_plugin import BaseStrategyPlugin
 
 class PluginLoader:
-    """
-    [①사유]: 전략 파일의 무결성 검증 후 로딩.
-    [방어 기제 #114, #145] 서명 기반 보안 로드.
-    """
-    def __init__(self, plugin_dir: str = "plugins/"):
-        self.plugin_dir = plugin_dir
+    def __init__(self, event_bus, shared_context):
+        self.bus = event_bus
+        self.shared_context = shared_context
+        self.logger = logging.getLogger("PluginLoader")
 
-    def _verify_signature(self, file_path: str) -> bool:
-        """[①사유]: 코드 변조 여부 확인. [②위험성]: 위조된 전략 로딩."""
-        # 파일의 해시값을 계산하여 사전에 등록된 서명과 비교
-        return True # 구현 시 실제 보안 알고리즘 적용
-
-    def load_plugin(self, plugin_name: str):
-        """
-        [①사유]: 시스템 재시작 없는 전략 교체.
-        [②위험성]: 불완전한 모듈 로딩으로 인한 런타임 에러.
-        """
-        file_path = os.path.join(self.plugin_dir, f"{plugin_name}.py")
+    def discover_and_load(self):
+        """[①사유]: plugins 폴더 내 모든 track*.py 파일을 자동 스캔 및 로드."""
+        loaded_plugins = {}
+        plugin_dir = "plugins"
         
-        if not self._verify_signature(file_path):
-            raise PermissionError("Strategy integrity check failed.")
-
-        spec = importlib.util.spec_from_file_location(plugin_name, file_path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
-
+        for filename in os.listdir(plugin_dir):
+            if filename.startswith("track") and filename.endswith(".py"):
+                module_name = f"plugins.{filename[:-3]}"
+                try:
+                    module = importlib.import_module(module_name)
+                    for name, obj in inspect.getmembers(module, inspect.isclass):
+                        if issubclass(obj, BaseStrategyPlugin) and obj is not BaseStrategyPlugin:
+                            loaded_plugins[filename[:-3]] = obj(filename[:-3], self.bus, self.shared_context)
+                            self.logger.info(f"Plugin Verified & Loaded: {filename[:-3]}")
+                except Exception as e:
+                    self.logger.error(f"Load Error {filename}: {e}")
+        return loaded_plugins
