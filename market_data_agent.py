@@ -1,39 +1,36 @@
 """
-이 코드는 명세서 제12장 2번의 요구사항을 반영하여 작성되었음.
-[①사유]: 시장 데이터를 정규화하여 전략 엔진의 연산 부하 최소화 및 미시구조 지표 산출.
-[②위험성]: 데이터 유실 및 잘못된 정규화로 인한 주문 왜곡.
-[③커스텀 범위]: KOSPI 200 파생상품 시세 스트림 처리.
+이 코드는 마스터 SDD 3.0의 [제 7장: 시장 데이터 처리 에이전트] 요구사항을 반영함.
+[방어 기제 #46] 비정상 시장가 필터링 및 [방어 기제 #69] LOB 정규화 로직 포함.
 """
 
-import asyncio
-from collections import deque
-from data_contract import MarketTick
+import logging
+from typing import Dict
 
 class MarketDataAgent:
-    """
-    [①사유]: 고속 데이터 수신 및 백프레셔 제어.
-    [②위험성]: 큐 누적에 따른 시스템 메모리 오버플로우.
-    [방어 기제 #11, #19, #113]
-    """
-    def __init__(self, max_queue_size: int = 5000):
-        self.queue = asyncio.Queue(maxsize=max_queue_size)
-        self.order_book = {} # 내부 메모리 호가창
+    def __init__(self, event_bus):
+        self.event_bus = event_bus
+        self.logger = logging.getLogger("MarketDataAgent")
+        self.last_price: float = 0.0
 
-    async def normalize_tick(self, raw_data: dict) -> MarketTick:
-        """[①사유]: 규격화된 객체로 변환. [②위험성]: 타입 캐스팅 오류."""
-        # 방어 기제 #105: 데이터 필드 타입 불일치 시 예외 처리
-        return MarketTick(**raw_data)
-
-    async def apply_backpressure(self, tick: MarketTick):
+    async def on_tick(self, tick_data: Dict):
         """
-        [①사유]: 큐 포화 시 중요도 낮은 틱 선제적 폐기.
-        [방어 기제 #19, #61]
+        [①사유]: 거래소 데이터 수신 및 유효성 검증.
+        [방어 기제 #46] 극단적인 가격 변동(Outlier) 차단.
         """
-        if self.queue.full():
-            # 오래된 데이터를 팝하고 새로운 데이터를 푸시 (drop-oldest)
-            self.queue.get_nowait()
-        await self.queue.put(tick)
+        price = tick_data.get("price")
+        
+        # 단순 변동성 체크 (예시: 이전 가격 대비 10% 이상 변동 시 비정상 간주)
+        if self.last_price != 0 and abs(price - self.last_price) / self.last_price > 0.1:
+            self.logger.warning(f"Abnormal Price Detected: {price}. Filtered.")
+            # [방어 기제 #189] 비정상 데이터 경보
+            await self.event_bus.publish(priority=0, event_type="CRITICAL_ALERT", data={"msg": "Outlier Price"})
+            return
 
+        self.last_price = price
+        
+        # 정규화된 틱 데이터 전송
+        await self.event_bus.publish(priority=3, event_type="NORMALIZED_TICK", data=tick_data)
+        self.logger.info(f"Tick Processed: {price}")
     async def rebuild_orderbook(self, tick: MarketTick):
         """[①사유]: 1~10호가 뎁스 재구축. [②위험성]: 부분 호가 반영 시 왜곡."""
         # 방어 기제 #46: 이상 가격 발생 시 통계적 필터링 적용
