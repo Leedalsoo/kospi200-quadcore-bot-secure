@@ -1,1 +1,18 @@
+{
+  "feature_flags": {
+    "auto_trading": true,
+    "gamma_hedging": true,
+    "arbitrage_engine": true
+  },
+  "risk_thresholds": {
+    "mdd_shutdown_pct": 0.05
+  },
+  "active_weights": {
+    "Track1": 0.3,
+    "Track2": 0.2,
+    "Track3": 0.2,
+    "Track4": 0.2,
+    "Track5": 0.1
+  }
+}
 
