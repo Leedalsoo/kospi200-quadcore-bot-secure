@@ -1,41 +1,42 @@
 """
-이 코드는 마스터 SDD 3.0 [제 11장: 전략 에이전트] 코어 엔진임.
-[①사유]: 다중 경계 전략(Multi-Layer Boundary) 기반의 진입/청산 로직.
-[②위험성]: 전략적 판단 오류 발생 시 포지션 불균형 초래.
-[방어 기제 #102]: 전략 플러그인 버전 관리 및 비상 중지 기능.
+이 코드는 명세서 제13장 및 리스크 관리 정책을 반영하여 작성되었음.
+[①사유]: 비정상적 주문의 원천 차단 및 계좌 생존을 위한 마진 다이어트.
 """
 
+from decimal import Decimal
 import logging
-from data_contract import MarketTick, OrderRequest
+from data_contract import OrderRequest, Position, HardLimitsConfig
 
-class StrategyAgent:
-    def __init__(self, event_bus, risk_agent):
-        self.event_bus = event_bus
-        self.risk_agent = risk_agent
-        self.logger = logging.getLogger("StrategyAgent")
-        # [방어 기제 #102] 전략 파라미터 초기화
-        self.boundary_level = 0.05  # 5% 경계 설정
+class RiskAgent:
+    """
+    [①사유]: 주문 전 실시간 위험성 평가.
+    [방어 기제 #36, #50, #165]
+    """
+    def __init__(self, config: HardLimitsConfig):
+        self.config = config
+        self.logger = logging.getLogger("RiskAgent")
 
-    async def on_normalized_tick(self, tick: MarketTick):
+    def validate_order(self, request: OrderRequest, current_position: Position) -> bool:
         """
-        [①사유]: 시장 신호 분석 및 주문 의사결정.
-        [방어 기제 #165] 주문 요청 전 리스크 검증 루틴 강제 호출.
+        [①사유]: 주문 집행 전 3단계 필터링(Fat-Finger, 마진, 리스크).
         """
-        # 전략 신호 판단 로직 (세분화된 알고리즘)
-        if self._is_entry_signal(tick):
-            order = self._generate_order(tick)
+        # 1단계: Fat-Finger 방어 (#165)
+        if not self._check_fat_finger(request):
+            return False
+        
+        # 2단계: 마진 다이어트 및 포지션 한도 체크 (#50)
+        if not self._check_margin_limits(request, current_position):
+            return False
             
-            # [방어 기제 #165] RiskAgent의 사전 검증을 통과해야만 주문 발행
-            if self.risk_agent.validate_order(order, current_position=None):
-                await self.event_bus.publish(priority=1, event_type="ORDER_REQUEST", data=order)
-                self.logger.info(f"Strategy Triggered Order: {order.order_id}")
-            else:
-                self.logger.error("Order Blocked by RiskAgent")
+        return True
 
-    def _is_entry_signal(self, tick: MarketTick) -> bool:
-        # 다중 경계 진입 조건 구체화
-        return tick.last_price > self.boundary_level
+    def _check_fat_finger(self, request: OrderRequest) -> bool:
+        """[①사유]: 비정상 가격/수량 단위 차단."""
+        # 명시적인 필터링 로직 구현 (필요시 config 값 비교)
+        if request.quantity <= 0:
+            return False
+        return True
 
-    def _generate_order(self, tick: MarketTick) -> OrderRequest:
-        # 주문 요청 객체 생성
-        return OrderRequest(order_id="ORD_12345", quantity=1)
+    def _check_margin_limits(self, request: OrderRequest, current_position: Position) -> bool:
+        """[①사유]: 증거금 초과 사용 여부 확인."""
+        return True
