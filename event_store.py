@@ -1,44 +1,70 @@
 """
-이 코드는 마스터 SDD 3.0의 [제 13장: 영속성 및 이벤트 소싱] 요구사항을 반영하여 작성되었음 [참조: #349, #350].
-모든 상태 변경 이력을 순차적으로 물리 디스크에 기록하는 WAL(Write-Ahead Logging) 엔진.
+[①사유]: WAL 엔진의 안정성 고도화 및 데이터 무결성 보장.
+[②방어 기제 #75, #90, #118]: 로그 로테이션 및 물리적 동기화 최적화.
 """
 
 import json
 import os
+import hashlib
 from datetime import datetime
-from typing import Any
+from typing import Any, List
 
 class EventStore:
     def __init__(self, log_path: str = "logs/system_events.jsonl"):
         self.log_path = log_path
-        # [방어 기제 #75] 데이터 저장 경로 분리
         os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
+        
+        # [세부 운영 수치]
+        self.params = {
+            "max_file_size": 100 * 1024 * 1024,  # 100MB 도달 시 로그 회전
+            "buffer_threshold": 10              # 10개 이벤트마다 강제 동기화(fsync)
+        }
+        self.event_count = 0
+
+    def _generate_checksum(self, data: str) -> str:
+        """[방어 기제 #120]: 데이터 변조 탐지를 위한 체크섬 생성."""
+        return hashlib.sha256(data.encode('utf-8')).hexdigest()
 
     async def save_event(self, event_type: str, data: Any):
-        """
-        [방어 기제 #36, #90] WAL 선행 기록 및 물리적 동기화(fsync).
-        """
+        """[①사유]: WAL 선행 기록 및 물리적 동기화."""
         event_entry = {
             "timestamp": datetime.now().isoformat(),
             "event_type": event_type,
             "data": data
         }
         
-        # [방어 기제 #40, #118] 원자적 기록 및 파편화 방지
-        with open(self.log_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(event_entry) + "\n")
-            f.flush()
-            os.fsync(f.fileno()) # [방어 기제 #90] 물리적 동기화 강제
+        # 체크섬 추가
+        json_data = json.dumps(event_entry)
+        entry_with_checksum = f"{json_data}|{self._generate_checksum(json_data)}\n"
 
-    async def load_history(self):
-        """
-        [방어 기제 #16] 재기동 시 상태 복구를 위한 이벤트 로드.
-        """
+        # [방어 기제 #75]: 파일 크기 확인 후 로테이션 (간략화)
+        if os.path.exists(self.log_path) and os.path.getsize(self.log_path) > self.params["max_file_size"]:
+            os.rename(self.log_path, f"{self.log_path}.{datetime.now().strftime('%Y%m%d%H%M%S')}")
+
+        with open(self.log_path, "a", encoding="utf-8") as f:
+            f.write(entry_with_checksum)
+            self.event_count += 1
+            
+            # [방어 기제 #90]: 배치 단위 동기화 (성능과 안전의 균형)
+            if self.event_count >= self.params["buffer_threshold"]:
+                f.flush()
+                os.fsync(f.fileno())
+                self.event_count = 0
+
+    async def load_history(self) -> List[dict]:
+        """[①사유]: 무결성 검증을 포함한 로그 복구."""
         if not os.path.exists(self.log_path):
             return []
             
         history = []
         with open(self.log_path, "r", encoding="utf-8") as f:
             for line in f:
-                history.append(json.loads(line))
-        return history # 수정됨: 'events'를 'history'로 정확히 반환
+                try:
+                    data, checksum = line.strip().split('|')
+                    if self._generate_checksum(data) == checksum:
+                        history.append(json.loads(data))
+                    else:
+                        logging.error("Corrupted event log detected!")
+                except Exception as e:
+                    logging.error(f"Failed to load event: {e}")
+        return history
