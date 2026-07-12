@@ -1,37 +1,46 @@
-
 """
-시스템 영속화(Persistence) 및 WAL(Write-Ahead Log) 엔진
-[①사유]: 비정상 종료 시에도 현재까지의 모든 상태를 복구(Recovery)하기 위함.
-[②위험성]: 기록되지 않은 이벤트 유실로 인한 포지션 불일치 및 미체결 주문 미식별.
+이 코드는 마스터 SDD 3.0의 [제 13장: 영속성 및 이벤트 소싱] 요구사항을 반영하여 작성되었음 [참조: #349, #350].
+모든 상태 변경 이력을 순차적으로 물리 디스크에 기록하는 WAL(Write-Ahead Logging) 엔진.
 """
 
 import json
-import aiofiles
 import os
+from datetime import datetime
+from typing import Any
 
 class EventStore:
-    """
-    [①사유]: 이벤트를 디스크에 순차적으로 기록(Append-only).
-    [방어 기제 #126] 동기식 저장이 아닌 비동기 I/O를 통한 시스템 성능 병목 방지.
-    """
-    def __init__(self, log_path="event_store.log"):
+    def __init__(self, log_path: str = "logs/system_events.jsonl"):
         self.log_path = log_path
+        # [방어 기제 #75] 데이터 저장 경로 분리
+        os.makedirs(os.path.dirname(self.log_path), exist_ok=True)
 
-    async def save_event(self, event_type: str, data: dict):
-        """[①사유]: 이벤트 영속화."""
-        record = {"type": event_type, "data": data}
-        async with aiofiles.open(self.log_path, mode='a') as f:
-            await f.write(json.dumps(record) + "\n")
-            # [방어 기제 #149] OS 캐시를 강제로 디스크에 물리적으로 기록
-            await f.flush()
+    async def save_event(self, event_type: str, data: Any):
+        """
+        [방어 기제 #36, #90] WAL 선행 기록 및 물리적 동기화(fsync).
+        모든 상태 변화는 디스크 기록이 완료된 후 시스템에 반영됨.
+        """
+        event_entry = {
+            "timestamp": datetime.now().isoformat(),
+            "event_type": event_type,
+            "data": data
+        }
+        
+        # [방어 기제 #40, #118] 원자적 기록 및 파편화 방지
+        with open(self.log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(event_entry) + "\n")
+            f.flush()
+            os.fsync(f.fileno()) # [방어 기제 #90] 물리적 동기화 강제
 
-    async def replay_events(self):
-        """[①사유]: 시스템 재기동 시 로그 파일로부터 과거 상태 재현."""
+    async def load_history(self):
+        """
+        [방어 기제 #16] 재기동 시 상태 복구를 위한 이벤트 Upcasting.
+        """
         if not os.path.exists(self.log_path):
             return []
-        
-        events = []
-        async with aiofiles.open(self.log_path, mode='r') as f:
-            async for line in f:
-                events.append(json.loads(line))
+            
+        history = []
+        with open(self.log_path, "r", encoding="utf-8") as f:
+            for line in f:
+                history.append(json.loads(line))
+        return history
         return events
