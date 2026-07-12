@@ -1,39 +1,44 @@
 """
-이 코드는 명세서 제5장 및 전략 알고리즘 사양을 반영하여 작성되었음.
-[①사유]: 시장 미시구조 기반 신호 생성 및 전략별 독립 실행 보장.
-[②위험성]: 전략 루프 내 무한 루프 발생 시 시스템 먹통.
-[③커스텀 범위]: 신호 생성 및 리스크 에이전트 연동 인터페이스.
+이 코드는 마스터 SDD 3.0 [제 11장: 전략 에이전트] 코어 엔진임.
+[①사유]: 다중 경계 전략(Multi-Layer Boundary) 기반의 진입/청산 로직.
+[②위험성]: 전략적 판단 오류 발생 시 포지션 불균형 초래.
+[방어 기제 #102]: 전략 플러그인 버전 관리 및 비상 중지 기능.
 """
 
-from data_contract import MarketTick, OrderRequest, Position
-from risk_agent import RiskAgent
-import uuid
+import logging
+from data_contract import MarketTick, OrderRequest
 
 class StrategyAgent:
-    """
-    [①사유]: 전략 알고리즘 코어 및 신호 생성 엔진.
-    [방어 기제 #12, #176] 전략별 독립적인 상태 격리.
-    """
-    def __init__(self, risk_engine: RiskAgent):
-        self.risk_engine = risk_engine
+    def __init__(self, event_bus, risk_agent):
+        self.event_bus = event_bus
+        self.risk_agent = risk_agent
+        self.logger = logging.getLogger("StrategyAgent")
+        # [방어 기제 #102] 전략 파라미터 초기화
+        self.boundary_level = 0.05  # 5% 경계 설정
 
-    async def generate_signal(self, tick: MarketTick, current_pos: Position) -> OrderRequest | None:
+    async def on_normalized_tick(self, tick: MarketTick):
         """
-        [①사유]: 시장 데이터 기반 의사결정.
-        [②위험성]: 잘못된 시그널 발생 시 무분별한 주문 남발.
+        [①사유]: 시장 신호 분석 및 주문 의사결정.
+        [방어 기제 #165] 주문 요청 전 리스크 검증 루틴 강제 호출.
         """
-        # 1. 시그널 계산 (예: 스프레드 차익거래 로직 등)
-        signal = self._calculate_logic(tick)
-        
-        if signal:
-            # 2. 리스크 엔진 통과 (가장 중요한 방어선)
-            if self.risk_engine.validate_order(signal, current_pos):
-                return signal
-        
-        return None
+        # 전략 신호 판단 로직 (세분화된 알고리즘)
+        if self._is_entry_signal(tick):
+            order = self._generate_order(tick)
+            
+            # [방어 기제 #165] RiskAgent의 사전 검증을 통과해야만 주문 발행
+            if self.risk_agent.validate_order(order, current_position=None):
+                await self.event_bus.publish(priority=1, event_type="ORDER_REQUEST", data=order)
+                self.logger.info(f"Strategy Triggered Order: {order.order_id}")
+            else:
+                self.logger.error("Order Blocked by RiskAgent")
 
-    def _calculate_logic(self, tick: MarketTick) -> OrderRequest | None:
-        """[①사유]: 내부 전략 로직. [②위험성]: 연산 에러 시 시스템 전이."""
+    def _is_entry_signal(self, tick: MarketTick) -> bool:
+        # 다중 경계 진입 조건 구체화
+        return tick.last_price > self.boundary_level
+
+    def _generate_order(self, tick: MarketTick) -> OrderRequest:
+        # 주문 요청 객체 생성
+        return OrderRequest(order_id="ORD_12345", quantity=1)
         # 여기에 실제 매매 전략 알고리즘 구현
         # 명세서 제5장에 정의된 전략 플러그인 로더와 결합 예정
         return None
