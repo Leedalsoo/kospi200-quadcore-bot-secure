@@ -1,29 +1,30 @@
 """
-이 코드는 명세서 제13장 데이터 무결성 및 상식 검증 요구사항을 반영하여 작성되었음.
-[①사유]: 비정상적 수치(Zero, Negative) 유입으로 인한 매매 엔진 연산 오류 방지.
-[②위험성]: 가격 0원 입력 시 계산 오류(Divide by Zero)로 시스템 크래시 발생.
-[③커스텀 범위]: 데이터 타입 및 값의 허용 범위 강제 검사.
+[①사유]: 수신 데이터의 현실성 및 건전성 검증.
+[②방어 기제 #35, #116]: 시장가 범위 이탈 및 비현실적 데이터 차단.
 """
 
-from data_contract import OrderRequest, MarketTick
+import logging
 
 class SanityCheckGuard:
-    """
-    [①사유]: 데이터가 시스템 로직으로 들어가기 전 '상식' 검증.
-    [방어 기제 #35, #116] 범위 이탈 데이터 즉시 거부.
-    """
-    
-    @staticmethod
-    def is_valid_price(price: float) -> bool:
-        """[①사유]: 가격은 반드시 양수여야 함."""
-        return price > 0
+    def __init__(self, min_price: float = 1.0, max_price: float = 1000.0):
+        # [세부 운영 수치]
+        # KOSPI200 옵션 가격 범위를 현실적으로 제한하여, 
+        # 비정상적인 데이터(예: 0원 또는 수만 원)를 즉시 배제
+        self.min_price = min_price
+        self.max_price = max_price
+        self.logger = logging.getLogger("SanityCheckGuard")
 
-    @staticmethod
-    def is_valid_qty(qty: int) -> bool:
-        """[①사유]: 수량은 반드시 자연수여야 함."""
-        return qty > 0
-
-    def check_market_data(self, tick: MarketTick) -> bool:
-        """[①사유]: 호가창 데이터 무결성 검증."""
-        return self.is_valid_price(tick.bid) and self.is_valid_price(tick.ask)
-
+    def is_sane(self, price: float, volume: int) -> bool:
+        """[①사유]: 시장 데이터의 수치적 현실성 검증."""
+        
+        # 1. 가격 범위 검증
+        if not (self.min_price <= price <= self.max_price):
+            self.logger.error(f"Price Out of Bounds: {price}. Blocking Data.")
+            return False
+            
+        # 2. 거래량 비현실성 검증
+        if volume < 0:
+            self.logger.error(f"Invalid Volume Detected: {volume}.")
+            return False
+            
+        return True
