@@ -1,1 +1,5 @@
+# [절대 보호] 수정 시 시스템 부팅이 거부됨
+max_mdd: 0.10             # 최대 MDD 10% 제한
+max_leverage: 1.0         # 레버리지 1배 제한
+emergency_stop_price: 100 # 안전 정지 가격
 
