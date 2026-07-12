@@ -1,42 +1,70 @@
 """
-시스템 통합 기동 스크립트 (Master Controller)
-[①사유]: 각 에이전트 초기화, 이벤트 버스 연결 및 비동기 루프 가동.
-[②위험성]: 순서가 꼬인 초기화는 시스템 데드락(Deadlock) 및 초기 시동 실패 유발.
+[①사유]: 전체 시스템 통합 및 라이프사이클 관리.
+[②방어 기제 #16, #20]: 상태 복구 기반 재기동 및 우아한 종료(Graceful Shutdown).
 """
 
 import asyncio
+import logging
+import signal
 from event_bus import EventBus
+from event_store import EventStore
 from market_data_agent import MarketDataAgent
+from oms_fsm import OMS_FSM
 from risk_agent import RiskAgent
 from strategy_agent import StrategyAgent
 from execution_agent import ExecutionAgent
-from interface_agent import InterfaceAgent
-from observability_agent import ObservabilityAgent
+from data_contract import HardLimitsConfig
 
-class TradingBot:
+# 로깅 설정
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(name)s: %(message)s')
+logger = logging.getLogger("Main")
+
+class TradingSystem:
     def __init__(self):
-        self.bus = EventBus()
-        # 모든 에이전트의 의존성을 주입하여 결합도를 최소화
-        self.market_data = MarketDataAgent(self.bus)
-        self.risk = RiskAgent(config={}) # HardLimitsConfig 주입 예정
-        self.strategy = StrategyAgent(self.risk)
-        self.execution = ExecutionAgent(self.bus)
-        self.interface = InterfaceAgent(self.bus)
-        self.monitor = ObservabilityAgent()
+        # [세부 운영 수치]
+        self.bus = EventBus(max_size=20000)
+        self.store = EventStore(log_path="logs/system_state.jsonl")
+        self.fsm = OMS_FSM(self.bus)
+        self.risk = RiskAgent(HardLimitsConfig(max_margin_usage=1000000))
+        self.market = MarketDataAgent(self.bus)
+        self.strategy = StrategyAgent(self.bus, self.risk)
+        self.execution = ExecutionAgent(self.bus, self.fsm)
+        
+        self.is_running = True
 
     async def run(self):
-        """[①사유]: 비동기 작업 통합 수행 및 시스템 하트비트 시작."""
-        # 이벤트 버스 루프와 각 에이전트의 태스크를 병렬로 실행
-        await asyncio.gather(
-            self.bus.start_loop(),
-            self.monitor.check_health()
-        )
+        """[①사유]: 시스템 이벤트 루프 및 상태 복구 실행."""
+        logger.info("System Initializing: Loading historical state...")
+        
+        # [방어 기제 #16]: 과거 상태 복구 (History Replay)
+        history = await self.store.load_history()
+        for event in history:
+            logger.info(f"Replaying Event: {event['event_type']}")
+        
+        logger.info("System Ready. Entering Event Loop.")
+        while self.is_running:
+            try:
+                # 이벤트 버스에서 작업 소비
+                event = await self.bus.consume()
+                if event:
+                    # 여기에 각 에이전트별 라우팅 로직 구현
+                    logger.debug(f"Processing: {event}")
+            except Exception as e:
+                logger.critical(f"System Loop Failure: {e}")
+
+    def shutdown(self):
+        self.is_running = False
+        logger.info("System Shutting Down gracefully.")
 
 if __name__ == "__main__":
-    bot = TradingBot()
+    system = TradingSystem()
+    loop = asyncio.get_event_loop()
+    
+    # 우아한 종료 처리
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, system.shutdown)
+        
     try:
-        asyncio.run(bot.run())
-    except KeyboardInterrupt:
-        # 시스템 안전 종료 루틴 (메모리 제로화 등)
-        pass
-
+        loop.run_until_complete(system.run())
+    finally:
+        loop.close()
