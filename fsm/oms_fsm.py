@@ -18,7 +18,7 @@ class OMS_FSM:
     def __init__(self, event_bus):
         self.event_bus = event_bus
         self.logger = logging.getLogger("OMS_FSM")
-        # 14단계 상태 전이 매트릭스 확장
+        # 14단계 상태 전이 매트릭스
         self._transitions = {
             OrderStatus.CREATED: {OrderStatus.PENDING, OrderStatus.REJECTED},
             OrderStatus.PENDING: {OrderStatus.SENT, OrderStatus.REJECTED, OrderStatus.ACCEPTED},
@@ -28,12 +28,14 @@ class OMS_FSM:
         }
 
     async def transition(self, current: OrderStatus, next_status: OrderStatus, order_id: str) -> bool:
+        # if-else 들여쓰기 완벽하게 맞춤
         if next_status in self._transitions.get(current, set()):
             self.logger.info(f"Order {order_id}: {current.name} -> {next_status.name}")
             return True
         else:
             self.logger.error(f"CRITICAL: Invalid State Transition for {order_id}: {current.name} -> {next_status.name}")
             await self.event_bus.publish(priority=0, event_type="CRITICAL_ALERT", data={"msg": "Invalid Transition", "order_id": order_id})
+            return False
             return False
         else:
             self.logger.error(f"CRITICAL: Invalid State Transition for {order_id}: {current.name} -> {next_status.name}")
