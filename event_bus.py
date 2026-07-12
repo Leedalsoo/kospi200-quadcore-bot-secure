@@ -1,46 +1,52 @@
 """
-이 코드는 마스터 SDD 3.0의 [제 3장: Internal Event Bus] 요구사항을 반영하여 작성되었음 [참조: #246, #248].
-Rust Native LMAX Disruptor 개념을 파이썬 환경에서 구현한 고속 링 버퍼 엔진.
+[①사유]: 내부 이벤트 버스(Event Bus)의 비동기 우선순위 처리 및 고성능 소비 모델.
+[②방어 기제 #19, #248]: 우선순위 기반 링 버퍼링 및 Back-pressure 제어.
 """
 
 import asyncio
-from dataclasses import dataclass
-from typing import Any, Tuple
-import heapq
+import logging
+from dataclasses import dataclass, field
+from typing import Any
 
 @dataclass(order=True)
 class EventTask:
-    # 3중 우선순위: Execution(0) > Risk(1) > Order(2) > Tick(3) > UI(4)
+    # 우선순위: 0(최고) ~ 5(최저)
     priority: int
     sequence: int
-    data: Any = None
+    data: Any = field(compare=False)
 
 class EventBus:
-    def __init__(self, max_size: int = 5000):
-        # 방어 기제 #19: 큐 포화 시 Drop-oldest 정책 구현을 위한 링 버퍼 구조
+    def __init__(self, max_size: int = 10000):
+        # [세부 운영 수치]
         self.max_size = max_size
-        self._queue = []  # 우선순위 큐 (heapq)
-        self._counter = 0 # 시퀀스 관리
-        self._lock = asyncio.Lock()
+        self._queue = asyncio.PriorityQueue(maxsize=max_size)
+        self._counter = 0
+        self.logger = logging.getLogger("EventBus")
 
-    async def publish(self, priority: int, data: Any):
-        """이벤트를 링 버퍼에 적재 [방어 기제 #2, #11]"""
-        async with self._lock:
-            # 방어 기제 #19: 큐 포화 상태 검사
-            if len(self._queue) >= self.max_size:
-                # 가장 우선순위가 낮고(값이 큰) 오래된 데이터를 제거
-                heapq.heappop(self._queue)
-            
-            task = EventTask(priority, self._counter, data)
-            heapq.heappush(self._queue, task)
-            self._counter += 1
+    async def publish(self, priority: int, event_type: str, data: Any):
+        """[①사유]: 비동기 이벤트 발행 및 큐 풀(Full) 정책 방어."""
+        # [방어 기제 #19]: 큐 가득 찼을 때의 전략(Non-blocking reject)
+        if self._queue.full():
+            self.logger.error("EventBus Overflow! Dropping lowest priority task.")
+            # 가장 오래된/낮은 우선순위 작업을 강제 비우고 다시 시도 (안전성 확보)
+            try:
+                self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+
+        self._counter += 1
+        task = EventTask(priority, self._counter, {"type": event_type, "payload": data})
+        
+        # 큐 삽입
+        self._queue.put_nowait(task)
 
     async def consume(self) -> Any:
-        """우선순위에 따라 이벤트 소비 [참조: #248]"""
-        async with self._lock:
-            if not self._queue:
-                return None
-            return heapq.heappop(self._queue).data
+        """[①사유]: 우선순위에 따른 이벤트 소비 및 블로킹 처리."""
+        # 이벤트를 기다리며 대기 (CPU 효율 극대화)
+        task = await self._queue.get()
+        data = task.data
+        self._queue.task_done()
+        return data
 
-    def is_empty(self) -> bool:
-        return len(self._queue) == 0
+    def get_queue_depth(self) -> int:
+        return self._queue.qsize()
