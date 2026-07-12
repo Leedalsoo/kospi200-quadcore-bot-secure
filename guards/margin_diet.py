@@ -1,32 +1,32 @@
 """
-이 코드는 명세서 제13장 리스크 관리 및 계좌 보호 요구사항을 반영하여 작성되었음.
-[①사유]: 계좌 증거금 소진 방지 및 MDD(Maximum Drawdown) 하드 제한.
-[②위험성]: 포지션 누적 시 마진콜 발생 및 계좌 전액 손실 위험.
-[③커스텀 범위]: 실시간 마진 레벨 및 손실 한도 검사.
+[①사유]: 마진 다이어트 및 MDD(Maximum Drawdown) 셧다운 로직.
+[②방어 기제 #50, #153, #212]: 과도한 손실 방지 및 자동 셧다운 트리거.
 """
 
-from data_contract import Position, HardLimitsConfig
+import logging
 
 class MarginDietGuard:
-    """
-    [①사유]: 실시간 마진 레벨 모니터링 및 생존 한도 제어.
-    [방어 기제 #50, #153, #212] 손실 한도 돌파 시 셧다운.
-    """
-    def __init__(self, config: HardLimitsConfig):
-        self.config = config
+    def __init__(self, mdd_threshold: float = 0.10, min_margin_ratio: float = 0.50):
+        # [세부 운영 수치]
+        # mdd_threshold: 계좌 잔고 대비 10% 손실 시 시스템 셧다운
+        # min_margin_ratio: 증거금 유지 비율 50% 미만 시 신규 진입 차단
+        self.mdd_threshold = mdd_threshold
+        self.min_margin_ratio = min_margin_ratio
+        self.logger = logging.getLogger("MarginDietGuard")
 
-    def check_safety(self, position: Position) -> bool:
-        """
-        [①사유]: 계좌 전체 증거금 안전성 확인.
-        [②위험성]: 리스크 체크 누락 시 마진콜까지 강제 보유.
-        """
-        # 1. 일일 손실 한도 체크
-        if position.unrealized_pnl < -self.config.max_daily_loss_amount:
-            return False
-            
-        # 2. 증거금 유지비율(Maintenance Margin) 체크
-        if position.margin_level < self.config.min_margin_level:
+    def validate_risk(self, current_balance: float, peak_balance: float, current_margin_ratio: float) -> bool:
+        """[①사유]: 실시간 리스크 평가 및 위험 신호 발행."""
+        
+        # 1. MDD 체크 (최고점 대비 하락률)
+        if peak_balance > 0:
+            drawdown = (peak_balance - current_balance) / peak_balance
+            if drawdown > self.mdd_threshold:
+                self.logger.critical(f"MDD Threshold Exceeded! Drawdown: {drawdown:.2%}. Shutting down.")
+                return False  # 시스템 즉시 셧다운 신호
+        
+        # 2. 증거금 유지 비율 체크
+        if current_margin_ratio < self.min_margin_ratio:
+            self.logger.warning(f"Margin Low: {current_margin_ratio:.2%}. Blocking new orders.")
             return False
             
         return True
-
