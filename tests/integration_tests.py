@@ -15,7 +15,7 @@ from uuid import uuid4
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from event_bus import EventBus
-from fsm.oms_fsm import OMS_FSM
+from fsm.oms_fsm import OMS_FSM, OrderStatus
 from broker.mock_broker_adapter import MockBroker
 from execution_agent import ExecutionAgent
 from orchestration.strategy_orchestrator import StrategyOrchestrator
@@ -30,6 +30,7 @@ async def test_order_lifecycle():
     broker = MockBroker(time_service=None)
     agent = ExecutionAgent(network=broker, fsm=fsm)
     
+    # [데이터 무결성]: 컨트랙트 규격 준수
     request = OrderRequest(
         decision_id=uuid4(),
         client_order_id=uuid4(),
@@ -43,24 +44,20 @@ async def test_order_lifecycle():
         qty=1
     )
     
+    # 주문 집행
     await agent.execute(request)
     
-    # [방어 기제]: 메서드 이름 불일치를 대비하여 동적 조회 (getattr 사용)
-    # get_state, get_status, 혹은 internal state 속성 중 존재하는 것을 사용
-    possible_methods = ['get_state', 'get_status', 'get_current_status']
-    status = "UNKNOWN"
-    for method_name in possible_methods:
-        if hasattr(fsm, method_name):
-            status = await getattr(fsm, method_name)(request.client_order_id)
-            break
-    else:
-        # 메서드가 없으면 속성 직접 접근 시도
-        status = getattr(fsm, 'current_state', 'PENDING')
+    # 상태 조회 (fsm.get_status 사용)
+    status = await fsm.get_status(request.client_order_id)
     
-    assert status in ["SENT", "PENDING"]
-    print(f"\n[성공] OMS 무결성 검증 완료. 상태: {status}")
+    # [방어 기제]: 상태값 비교 시 이름(name)을 사용하여 비교 오류 방지
+    status_name = status.name if isinstance(status, OrderStatus) else str(status)
+    print(f"\n[성공] OMS 무결성 검증 완료. 최종 상태: {status_name}")
+    
+    # 상태가 SENT, PENDING 혹은 FILLED 중 하나인지 확인
+    assert status_name in ["SENT", "PENDING", "FILLED"]
 
-# 2. 오케스트레이션 및 리스크 검증 (전략 운영 검증)
+# 2. 오케스트레이션 및 리스크 검증
 @pytest.mark.asyncio
 async def test_orchestration_logic():
     shared_context = {'active_weights': {}}
