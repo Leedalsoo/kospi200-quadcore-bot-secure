@@ -10,10 +10,18 @@ from .base_plugin import BaseStrategyPlugin
 import logging
 
 class Track5Volatility(BaseStrategyPlugin):
+    
     async def on_market_tick(self, data: dict):
         """
-        [①사유]: 시장 변동성 정밀 분석 후 변동성 고평가 시 매도.
-        [②방어 기제 #37]: 데이터 변동성에 따른 IV Surface 보간 모델 스위칭.
+        [①사유]: 표준 진입점. 
+        safe_execute를 통해 로직을 실행하여 예외 상황을 중앙으로 전파함.
+        """
+        await self.safe_execute(self._my_logic, data)
+
+    async def _my_logic(self, data: dict):
+        """
+        [①사유]: 실제 변동성 매도 전략 로직 구현부.
+        [방어 기제 #37]: 데이터 변동성에 따른 IV Surface 보간 모델 스위칭.
         """
         # 1. 시스템 가중치 확인 (자본 배분 20% 가정)
         weight = self.context['active_weights'].get(self.name, 0.2)
@@ -23,15 +31,12 @@ class Track5Volatility(BaseStrategyPlugin):
         hv = data.get('hv', 0.0)
         
         # 3. [핵심] IV Surface 모델 동적 전환 규칙 (명세서 제3장 5조)
-        # 시장 변동성 급등 시 Linear 보간의 오차를 줄이기 위해 Cubic Spline 사용
         model_type = "CUBIC_SPLINE" if data.get('iv_spike', False) else "LINEAR_INTERPOLATION"
         
         # 4. [고도화] 변동성 매도 조건 검증
-        # IV가 HV보다 10% 이상 높을 때 매도 진입 (기계적 과대평가 수확)
         if iv > (hv * 1.1):
             
             # 5. [최종] 정밀 타격
-            # 가중치를 반영한 포지션 사이징
             target_qty = int(2 * weight)
             
             if target_qty > 0:
