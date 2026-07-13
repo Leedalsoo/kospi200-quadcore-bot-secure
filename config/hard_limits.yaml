@@ -1,5 +1,17 @@
-# [절대 보호] 수정 시 시스템 부팅이 거부됨
-max_mdd: 0.10             # 최대 MDD 10% 제한
-max_leverage: 1.0         # 레버리지 1배 제한
-emergency_stop_price: 100 # 안전 정지 가격
+# [절대 보호] 시스템의 근간이 되는 하드 리밋
+system_limits:
+  max_mdd: 0.10             # 시스템 전체 MDD 10% 제한
+  max_leverage: 1.0         # 레버리지 1배 제한
+  emergency_stop_price: 100 # 시스템 비상 정지 가격
 
+# [모듈별 세부 방어 기제]
+guardrails:
+  fat_finger:
+    max_price_deviation: 0.05
+    max_qty: 100
+  margin_diet:
+    mdd_threshold: 0.10
+    min_margin_ratio: 0.50
+  sanity_check:
+    min_price: 1.0
+    max_price: 1000.0
