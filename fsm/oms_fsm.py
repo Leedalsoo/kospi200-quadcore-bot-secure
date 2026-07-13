@@ -19,12 +19,13 @@ class OMS_FSM:
         # [데이터 무결성]: 각 주문의 현재 상태를 추적하기 위한 저장소
         self._order_states = {}
         
-        # [세부 전이 매트릭스]
+        # [세부 전이 매트릭스] - 확장된 전이 규칙 적용
         self._transitions = {
             OrderStatus.CREATED: {OrderStatus.PENDING, OrderStatus.REJECTED},
             OrderStatus.PENDING: {OrderStatus.SENT, OrderStatus.REJECTED, OrderStatus.ACCEPTED},
-            OrderStatus.SENT: {OrderStatus.PARTIAL, OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.PENDING_CANCEL},
+            OrderStatus.SENT: {OrderStatus.PARTIAL, OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.PENDING_CANCEL, OrderStatus.REJECTED},
             OrderStatus.PARTIAL: {OrderStatus.PARTIAL, OrderStatus.FILLED, OrderStatus.CANCELLED},
+            OrderStatus.ACCEPTED: {OrderStatus.SENT, OrderStatus.FILLED, OrderStatus.CANCELLED},
             OrderStatus.PENDING_CANCEL: {OrderStatus.CANCELLED, OrderStatus.REJECTED},
         }
 
@@ -34,6 +35,7 @@ class OMS_FSM:
 
     async def transition(self, current: OrderStatus, next_status: OrderStatus, order_id: str) -> bool:
         """[①사유]: 상태 전이 유효성 검증 및 비정상 상태 시 자동 알림."""
+        
         # 1. 상태 전이 가능 여부 확인
         if next_status in self._transitions.get(current, set()):
             self.logger.info(f"Transition Success [{order_id}]: {current.name} -> {next_status.name}")
@@ -42,8 +44,11 @@ class OMS_FSM:
             self._order_states[order_id] = next_status
             
             # [방어 기제 #10] 상태 전이 완료 이벤트 발행
-            await self.event_bus.publish(priority=2, event_type="STATE_CHANGED", 
-                                       data={"order_id": order_id, "from": current.name, "to": next_status.name})
+            await self.event_bus.publish(
+                priority=2, 
+                event_type="STATE_CHANGED", 
+                data={"order_id": order_id, "from": current.name, "to": next_status.name}
+            )
             return True
         
         # 2. 비정상 전이 발생 시 즉시 조치
@@ -51,6 +56,9 @@ class OMS_FSM:
             self.logger.error(f"CRITICAL: State Mismatch [{order_id}]: {current.name} to {next_status.name}")
             
             # [방어 기제 #14] 상태 불일치 알림 발행
-            await self.event_bus.publish(priority=0, event_type="CRITICAL_ALERT", 
-                                       data={"msg": "Invalid State Transition", "order_id": order_id})
+            await self.event_bus.publish(
+                priority=0, 
+                event_type="CRITICAL_ALERT", 
+                data={"msg": "Invalid State Transition", "order_id": order_id}
+            )
             return False
