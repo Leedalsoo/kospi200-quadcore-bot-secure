@@ -23,12 +23,12 @@ class ExecutionAgent:
         }
 
     def _serialize_request(self, request: OrderRequest):
-        """[①사유]: 네트워크 전송을 위한 명시적 직렬화. 속성명 매칭 오류 원천 차단."""
+        """[①사유]: 네트워크 전송을 위한 명시적 직렬화."""
         return {
             "client_order_id": str(request.client_order_id),
             "instrument_code": request.instrument_code,
-            "price": float(request.price) if isinstance(request.price, Decimal) else request.price,
-            "qty": request.qty,
+            "price": float(request.price) if isinstance(request.price, Decimal) else float(request.price),
+            "qty": int(request.qty),
             "side": request.side,
             "order_type": request.order_type
         }
@@ -42,7 +42,6 @@ class ExecutionAgent:
             try:
                 # 상태 전이: CREATED -> PENDING
                 if await self.fsm.transition(OrderStatus.CREATED, OrderStatus.PENDING, order_id):
-                    # 명시적 직렬화 호출
                     await self.network.send_order(self._serialize_request(request))
                     
                     # 상태 전이: PENDING -> SENT
@@ -50,20 +49,23 @@ class ExecutionAgent:
                     return
             except Exception as e:
                 attempt += 1
-                # 속성 접근 에러 방지: request.client_order_id를 직접 사용
                 self.logger.warning(f"Retry {attempt}/{self.params['max_retries']} for {order_id}: {e}")
                 await asyncio.sleep(self.params["retry_delay"] * (2 ** attempt))
         
+        # 재시도 실패 시 상태: REJECTED
         await self.fsm.transition(OrderStatus.PENDING, OrderStatus.REJECTED, order_id)
 
     async def handle_report(self, report: ExecutionReport):
         """[①사유]: 거래소 체결 보고서 처리 및 FSM 전이 검증."""
         order_id = report.client_order_id
         
-        # FSM 상태 조회 안전 장치
-        current_status = await self.fsm.get_status(order_id)
+        # [방어 기제]: 상태 조회 실패 시 기본값(CREATED) 할당
+        current_status = await self.fsm.get_status(order_id) or OrderStatus.CREATED
         
-        if await self.fsm.transition(current_status, report.status, order_id):
-            self.logger.info(f"Order {order_id} transitioned to {report.status.name}")
+        # report.status가 OrderStatus 타입인지 확인 후 전이
+        next_status = report.status if isinstance(report.status, OrderStatus) else OrderStatus[report.status]
+        
+        if await self.fsm.transition(current_status, next_status, order_id):
+            self.logger.info(f"Order {order_id} transitioned to {next_status.name}")
         else:
-            self.logger.error(f"CRITICAL: Invalid transition from {current_status.name} to {report.status.name}")
+            self.logger.error(f"CRITICAL: Invalid transition from {current_status.name} to {next_status.name}")
