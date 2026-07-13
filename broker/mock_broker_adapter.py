@@ -5,7 +5,7 @@ import uuid
 from decimal import Decimal
 from data_contract import OrderRequest, ExecutionReport, OrderStatus
 
-class MockBrokerAdapter:
+class MockBroker:
     def __init__(self, time_service):
         self.time_service = time_service
 
