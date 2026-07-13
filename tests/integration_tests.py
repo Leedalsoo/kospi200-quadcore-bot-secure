@@ -27,10 +27,12 @@ from data_contract import OrderRequest
 async def test_order_lifecycle():
     bus = EventBus()
     fsm = OMS_FSM(bus)
+    # 1. MockBroker를 올바르게 인스턴스화
     broker = MockBroker(time_service=None)
-    agent = ExecutionAgent(network=bus, fsm=fsm)
+    # 2. ExecutionAgent의 network 인자에 bus가 아닌 broker를 전달하여 send_order 호출 가능하게 함
+    agent = ExecutionAgent(network=broker, fsm=fsm)
     
-    # 딕셔너리 대신 data_contract의 OrderRequest 객체 생성 (속성 접근 해결)
+    # OrderRequest 객체 생성
     request = OrderRequest(
         decision_id=uuid4(),
         client_order_id=uuid4(),
@@ -45,8 +47,9 @@ async def test_order_lifecycle():
     )
     
     await agent.execute(request)
-    # OMS 내부 로직에 따라 trace_id 또는 client_order_id로 상태 조회
-    status = await fsm.get_status("test_001")
+    
+    # 3. get_status 대신 FSM 표준 메서드인 get_state 사용
+    status = await fsm.get_state(request.client_order_id)
     
     assert status in ["SENT", "PENDING"]
     print("\n[성공] OMS 무결성 검증 완료.")
