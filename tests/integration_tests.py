@@ -19,7 +19,8 @@ async def test_order_lifecycle():
     bus = EventBus()
     fsm = OMS_FSM(bus)
     # MockBroker 초기화 시 필요한 의존성 전달
-    broker = MockBroker() 
+    # time_service를 None으로 전달하여 초기화 오류 방지
+    broker = MockBroker(time_service=None)
     agent = ExecutionAgent(bus=bus, fsm=fsm)
     
     # 주문 요청 객체 생성 (data_contract 활용)
