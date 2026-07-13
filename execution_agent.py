@@ -7,7 +7,7 @@ import logging
 import asyncio
 from data_contract import OrderRequest, ExecutionReport
 from network_agent import NetworkAgent
-from oms_fsm import OMS_FSM, OrderStatus
+from fsm.oms_fsm import OMS_FSM, OrderStatus
 
 class ExecutionAgent:
     def __init__(self, network: NetworkAgent, fsm: OMS_FSM):
