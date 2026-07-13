@@ -17,8 +17,15 @@ class Track2Trap(BaseStrategyPlugin):
 
     async def on_market_tick(self, data: dict):
         """
-        [①사유]: 4중 필터 통과 후 옵션 기습 진입 및 즉각적 선물 헤지(Delta-Neutral).
-        [②방어 기제]: 함정 비용(프리미엄) 보호를 위한 즉시 델타 중립화.
+        [①사유]: 표준 진입점. 전략 로직은 _my_logic()에서 실행하며, 
+        safe_execute를 통해 에러 발생 시 중앙 시스템으로 즉시 전파함.
+        """
+        await self.safe_execute(self._my_logic, data)
+
+    async def _my_logic(self, data: dict):
+        """
+        [①사유]: 실제 전략 로직 구현부. 
+        [방어 기제]: 4중 필터 통과 후 옵션 기습 진입 및 즉각적 선물 헤지(Delta-Neutral).
         """
         # 1. 쿨다운 검증
         if time.monotonic() - self.last_trade_time < self.COOLDOWN_SECONDS:
@@ -36,7 +43,6 @@ class Track2Trap(BaseStrategyPlugin):
             
             # 4. [핵심] 선물 헤지 (함정 비용 보호)
             # 옵션 진입으로 인해 발생한 델타를 선물로 즉시 상쇄
-            # 옵션 델타 1.0당 선물 1계약 매도 (매수 진입 시)
             option_delta = data.get("option_delta_exposure", 0.0)
             hedge_qty = -round(option_delta) 
             
