@@ -25,7 +25,8 @@ async def test_order_lifecycle():
     bus = EventBus()
     fsm = OMS_FSM(bus)
     broker = MockBroker(time_service=None)
-    agent = ExecutionAgent(bus=bus, fsm=fsm)
+    # 'bus' 대신 'network' 또는 'event_bus'로 변경 시도
+    agent = ExecutionAgent(network=bus, fsm=fsm))
     
     # 주문 요청 딕셔너리 구성
     request = {
