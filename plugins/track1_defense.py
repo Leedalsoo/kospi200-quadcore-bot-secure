@@ -9,27 +9,31 @@ from .base_plugin import BaseStrategyPlugin
 import logging
 
 class Track1Defense(BaseStrategyPlugin):
+    
     async def on_market_tick(self, data: dict):
         """
-        [①사유]: 시장 데이터를 분석하여 옵션 포지션 리스크를 선물로 즉시 헤지.
-        [②방어 기제 #8-9]: 옵션 호가 공백 시 선물 주문으로 델타 중립화 강제.
+        [①사유]: 표준 진입점. 전략 로직은 _my_logic()에서 실행하며, 
+        safe_execute를 통해 에러 발생 시 중앙 시스템으로 즉시 전파함.
+        """
+        await self.safe_execute(self._my_logic, data)
+
+    async def _my_logic(self, data: dict):
+        """
+        [①사유]: 실제 전략 로직 구현부.
+        [②방어 기제]: 옵션 호가 공백 시 선물 주문으로 델타 중립화 강제.
         """
         # 1. 시스템 가중치 확인 (자본의 50% 기본 배분)
         weight = self.context['active_weights'].get(self.name, 0.5)
         
-        # 2. 포트폴리오 델타 총합 기반 선물 헤지 수량 도출 (명세서 제8장 9조)
-        # portfolio_delta: 옵션 포지션의 전체 델타 합계
+        # 2. 포트폴리오 델타 총합 기반 선물 헤지 수량 도출
         portfolio_delta = data.get("total_delta", 0.0)
         
         # 델타 중립화 임계치(둔감도 버퍼) 0.1 적용
         if abs(portfolio_delta) > 0.1:
-            # 선물 1계약은 델타 1.0으로 가정 (KOSPI 200 선물)
-            # 헤지 계약 수(Q_futures) = -round(delta_portfolio / 1.0)
             hedge_qty = -round(portfolio_delta / 1.0)
             side = "BUY" if hedge_qty > 0 else "SELL"
             
             # [핵심 방어] 옵션 청산 불완전성 극복을 위한 선물 선행 주문
-            # 호가가 얇은 옵션 대신 유동성이 풍부한 선물로 먼저 리스크를 Lock-down
             await self.execute_order(
                 price=data['last_price'], 
                 qty=abs(hedge_qty), 
@@ -41,7 +45,6 @@ class Track1Defense(BaseStrategyPlugin):
         # 명세서 제8장 8조: 계좌 평가 잔고 MDD 5% 이하일 때만 신규 진입
         if data.get("total_mdd", 0) < 0.05: 
             # 1/8 Kelly 기반 사이징 적용 (가중치 * 1계약)
-            # weight(0.5)를 적용하여 시스템 전체 자산 배분 비중 준수
             await self.execute_order(
                 price=data['last_price'], 
                 qty=int(1 * weight), 
